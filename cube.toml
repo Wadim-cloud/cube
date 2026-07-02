@@ -1,0 +1,18 @@
+# Cube Server Configuration
+# Hot-reloadable via inotify or SIGHUP
+
+root = "/home/ds/dev/microfolio-odin/dist"
+max_connections = 1024
+cache_enabled = true
+cache_max_mb = 32
+cache_max_file_kb = 256
+log_level = 1
+
+# Image pipeline
+img_enabled = true
+img_cache_dir = "/home/ds/dev/cube/cache/images"
+img_max_mem_mb = 128
+img_quality = 85
+img_max_width = 3840
+img_max_height = 2160
+img_max_input = 10485760
