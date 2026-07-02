@@ -91,7 +91,7 @@ process_image_job :: proc(job: Image_Job) -> bool {
     cube_image.load_from_memory(file, &dec_img, &dec_ok)
     delete(file)
     if !dec_ok { return false }
-    defer image_free(dec_img)
+    defer cube_image.image_free(dec_img)
 
     tw, th := job.width, job.height
     if tw == 0 && th > 0 {
@@ -107,7 +107,7 @@ process_image_job :: proc(job: Image_Job) -> bool {
     if tw > 0 || th > 0 {
         resized := cube_image.resize(dec_img, tw, th, dec_img.channels)
         if !resized.ok { return false }
-        defer image_free(resized.img)
+        defer cube_image.image_free(resized.img)
         dec_img = resized.img
     }
 
@@ -124,7 +124,7 @@ process_image_job :: proc(job: Image_Job) -> bool {
     return true
 }
 
-image_job_queue_background :: proc() {
+image_job_queue_background :: proc(_: int) {
     for {
         image_job_worker()
     }
