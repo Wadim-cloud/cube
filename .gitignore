@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+*.so
+*.a
+cube_bin
+test_decode/
+test_img/
+
+# Cache files
+cache/
+core/cube_image/stb_image_wrapper.o
+
+# Odin build cache
+__pycache__/
+*.pyc
