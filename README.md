@@ -257,6 +257,43 @@ Any change to the original file (mtime or size) produces a new version identifie
 - WebP (planned, requires libwebp)
 - AVIF (planned, requires libavif)
 
+## Internals
+
+### Workers
+
+Cube uses a multi-threaded worker pool. On startup, the main thread spawns N worker threads (default: 4, max: 64). Each worker runs an independent event loop:
+
+1. `net.accept_tcp` — accept a connection
+2. Check backpressure limits
+3. Read request buffer (64KB per worker)
+4. Parse HTTP request
+5. If the path is an image with `?w=` / `?h=` params, route to `serve_image`
+6. Otherwise, resolve via the routing graph and invoke the handler
+7. Track per-worker stats (requests handled, bytes sent, arena peak)
+8. Close connection and loop
+
+Arena allocation: each worker owns a 10MB arena that is reset after every request, giving cache-friendly sequential allocation without per-request malloc overhead.
+
+### Backpressure
+
+Active connections are counted atomically. If active connections exceed `max_connections`, new connections are immediately rejected with `503 Service Unavailable` instead of queued. This keeps latency bounded under load and prevents memory exhaustion.
+
+The configured `max_connections` can also be adjusted by the adaptive runtime.
+
+### Adaptive Runtime
+
+A dedicated background thread runs every `check_interval` (default: 1s). It samples telemetry counters and applies self-tuning rules:
+
+- **High cache miss rate (>80%)**: raises `cache_max_file` up to 2MB to cache larger files.
+- **P99 latency spike (>100ms)**: reduces `max_connections` by 25% to shed load.
+- **Sustained high load (connection utilization >90%)**: raises `cache_max_file` up to 4MB to improve hit rate.
+
+Adjustments are logged to an `Adjustment_Log` ring buffer and published via the internal event bus for the dashboard.
+
+### Background Image Jobs
+
+On every cache miss, after serving the requested variant, Cube enqueues background jobs for the same image at other common sizes (400, 800, 1200, 1600) in JPEG and PNG. A dedicated background worker thread pulls from a 4096-slot MPSC queue and pre-generates those variants. When a browser later requests one of those sizes, it is already in the disk/memory cache.
+
 ## Storage Backend
 
 The `storage` package (`core/storage/storage.odin`) provides an abstraction layer for cache storage:
