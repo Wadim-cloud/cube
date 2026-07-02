@@ -1,8 +1,63 @@
 # Cube
 
-Production-grade adaptive image optimization pipeline for Odin Hoster.
+Production-grade adaptive image optimization pipeline.
 
-Transparently intercepts image requests, resizes, re-encodes, caches, and serves optimized variants — no application changes required.
+Cube is a standalone HTTP server written in Odin that sits in front of Caddy (or any reverse proxy) and transparently optimizes images on-the-fly. It is designed to be used as part of **Odin Hoster**, a larger self-hosted platform, but works independently for any static site.
+
+## What is Odin Hoster?
+
+**Odin Hoster** is the broader hosting platform that Cube is built for. It is a self-contained, high-performance static site hosting stack written in Odin, which includes:
+
+- **Cube** — the image optimization layer (this repository)
+- **Caddy** — reverse proxy / TLS termination
+- **microfolio-odin** — the portfolio site generator that produces the HTML/CSS/JS served through the stack
+
+Odin Hoster’s design goal is to give you a fully self-hosted, zero-config, high-performance personal site / portfolio platform. Cube is the image optimization module within that stack.
+
+## How Cube Fits Into Odin Hoster
+
+```
+┌─────────────┐
+│   Browser   │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────────────────────────┐
+│             Caddy (TLS)                 │
+└──────┬──────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────────┐
+│              Cube                       │
+│  ┌─────────────────────────────────┐   │
+│  │  Image Detection (?w= / ?h=)   │   │
+│  ├─────────────────────────────────┤   │
+│  │  Cache Lookup (memory + disk)   │   │
+│  ├─────────────────────────────────┤   │
+│  │  Transform Pipeline             │   │
+│  │  decode → resize → encode       │   │
+│  ├─────────────────────────────────┤   │
+│  │  Background Job Queue           │   │
+│  │  (pre-generate common sizes)    │   │
+│  ├─────────────────────────────────┤   │
+│  │  Telemetry                      │   │
+│  └─────────────────────────────────┘   │
+└──────┬──────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────────┐
+│  microfolio-odin static files (dist/)   │
+└─────────────────────────────────────────┘
+```
+
+When a browser requests `/projects/foo/images/bar.jpg?w=400`:
+
+1. Caddy forwards the request to Cube
+2. Cube detects the `?w=400` query parameter
+3. Cube checks its cache (memory first, then disk)
+4. On cache miss: Cube decodes the original image from disk, resizes it, encodes it as JPEG/PNG, and stores the result
+5. Cube returns the optimized image to Caddy, which forwards it to the browser
+6. In the background, Cube queues jobs to pre-generate other common sizes (800, 1200, 1600) so future requests are instant
 
 ## Architecture
 
@@ -10,7 +65,12 @@ Transparently intercepts image requests, resizes, re-encodes, caches, and serves
 Client
    │
    ▼
-Odin Hoster (Cube)
+Odin Hoster
+   │
+   ├── Caddy (reverse proxy / TLS)
+   │
+   ▼
+Cube (this repository)
    │
    ├── Image Detection (?w= / ?h= query params)
    ├── Cache Lookup (memory + disk)
@@ -20,7 +80,7 @@ Odin Hoster (Cube)
    └── Cache Store
    │
    ▼
-Caddy / Filesystem
+Static File Root (microfolio-odin dist/)
 ```
 
 ## Features
