@@ -318,6 +318,18 @@ deleted := storage.storage_delete(&backend, key)
 
 Currently implements local filesystem backend. Designed for future S3/GCS/Azure backends.
 
+## Experimental Runtime
+
+`core/runtime/worker.odin` contains an experimental per-core worker runtime built on Odin's `core:nbio` event loop. It is **not currently used** by the main server path.
+
+The experimental design goals were:
+- One event loop per worker thread via `nbio.acquire_thread_event_loop`
+- Isolated arena per worker, reset after each request
+- Zero runtime string lookup via the compiled execution graph
+- Inline request handling on the worker's own thread
+
+The current production server uses a simpler acceptor-per-worker thread model in `cmd/cube/main.odin` (`worker_run`), which proved more reliable and easier to reason about. The experimental runtime is preserved for future migration once nbio matures.
+
 ## API
 
 ### Image Cache API
