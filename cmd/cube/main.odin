@@ -535,11 +535,6 @@ record_visit :: proc(path: string, ip: string, referrer: string, ua: string) {
     if strings.has_prefix(path, "/_cube/") {
         return
     }
-    if strings.contains(path, ".") {
-        if !strings.has_suffix(path, ".html") {
-            return
-        }
-    }
     sync.mutex_lock(&global_telemetry.mutex)
     defer sync.mutex_unlock(&global_telemetry.mutex)
 
