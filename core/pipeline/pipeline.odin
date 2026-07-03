@@ -8,19 +8,14 @@ import "core:fmt"
 import "core:hash"
 import "core:c"
 import "../../core/image_cache"
+import "../../codecs"
 
 foreign import cube_image "../cube_image/stb_image_wrapper.a"
 @(default_calling_convention="c")
 foreign cube_image {
-    cube_image_load           :: proc(path: cstring, out_w: ^c.int, out_h: ^c.int, out_channels: ^c.int) -> rawptr ---
-    cube_image_load_from_memory :: proc(bytes: rawptr, len: c.int, out_w: ^c.int, out_h: ^c.int, out_channels: ^c.int) -> rawptr ---
-    cube_image_free           :: proc(img: rawptr) ---
-    cube_image_resize         :: proc(pixels: rawptr, src_w: c.int, src_h: c.int, new_w: c.int, new_h: c.int, channels: c.int) -> rawptr ---
-    cube_image_encode_png     :: proc(data: rawptr, w: c.int, h: c.int, channels: c.int, stride: c.int, out_len: ^c.int) -> rawptr ---
-    cube_image_encode_jpeg    :: proc(data: rawptr, w: c.int, h: c.int, channels: c.int, quality: c.int, out_len: ^c.int) -> rawptr ---
-    cube_image_encode_webp    :: proc(data: rawptr, w: c.int, h: c.int, channels: c.int, quality: c.int, out_len: ^c.int) -> rawptr ---
-    cube_image_free_buffer    :: proc(buf: rawptr) ---
-    cube_image_get_data       :: proc(img: rawptr) -> rawptr ---
+    cube_image_resize :: proc(pixels: rawptr, src_w: c.int, src_h: c.int, new_w: c.int, new_h: c.int, channels: c.int) -> rawptr ---
+    cube_image_get_data :: proc(img: rawptr) -> rawptr ---
+    cube_image_free :: proc(img: rawptr) ---
 }
 
 Pipeline_Error :: struct {
@@ -30,74 +25,68 @@ Pipeline_Error :: struct {
     Message: string,
 }
 
-ColorSpace :: enum { RGB, RGBA, GRAY, GRAYA, YCbCr }
-AlphaMode :: enum { Opaque, Premultiplied, Straight }
-Orientation :: enum { TopLeft, TopRight, BottomRight, BottomLeft }
-
-Image :: struct {
-    Width:       u32,
-    Height:      u32,
-    Pixels:      []u8,
-    ColorSpace:  ColorSpace,
-    AlphaMode:   AlphaMode,
-    Orientation: Orientation,
+Validation_Error :: struct {
+    Stage:   string,
+    Codec:   string,
+    File:    string,
+    Message: string,
 }
 
-image_free :: proc(img: Image) {
-    if img.Pixels != nil {
-        delete(img.Pixels)
+pipeline_validate :: proc(file: string, data: []u8, img: codecs.Image, max_bytes: i64) -> Validation_Error {
+    if img.Width == 0 || img.Height == 0 {
+        return Validation_Error{Stage="validate", Codec="", File=file, Message="invalid dimensions"}
     }
-}
-
-copy_to_channels_direct :: proc(src: []u8, w, h, s_ch, d_ch: int) -> []u8 {
-    if s_ch == d_ch { return src }
-    if d_ch < s_ch {
-        out := make([]u8, w * h * d_ch)
-        cnt := w * h
-        for i := 0; i < cnt; i += 1 {
-            for c := 0; c < d_ch; c += 1 {
-                out[i * d_ch + c] = src[i * s_ch + c]
-            }
+    if img.Width > 0x8000 || img.Height > 0x8000 {
+        return Validation_Error{Stage="validate", Codec="", File=file, Message="dimensions exceed maximum"}
+    }
+    expected := u64(img.Width) * u64(img.Height) * u64(4)
+    if expected > 0xFFFFFFFF {
+        return Validation_Error{Stage="validate", Codec="", File=file, Message="integer overflow in pixel buffer"}
+    }
+    if len(img.Pixels) > 0 && u64(len(img.Pixels)) != u64(img.Width) * u64(img.Height) * u64(4) {
+        if len(img.Pixels) != int(u64(img.Width) * u64(img.Height) * u64(3)) {
+            return Validation_Error{Stage="validate", Codec="", File=file, Message="pixel buffer size mismatch"}
         }
-        return out
     }
-    return nil
+    if len(data) == 0 {
+        return Validation_Error{Stage="validate", Codec="", File=file, Message="empty input data"}
+    }
+    if i64(len(data)) > max_bytes {
+        return Validation_Error{Stage="validate", Codec="", File=file, Message="file exceeds maximum size"}
+    }
+    return Validation_Error{}
 }
 
-pipeline_decode :: proc(data: []u8, file: string) -> (Image, Pipeline_Error) {
-    out_w: c.int; out_h: c.int; out_channels: c.int
-    ptr := cube_image_load_from_memory(rawptr(&data[0]), c.int(len(data)), &out_w, &out_h, &out_channels)
-    if ptr == nil {
-        err := Pipeline_Error{Stage="decode", Codec="", File=file, Message="stbi_load_from_memory failed"}
-        return Image{}, err
+pipeline_decode :: proc(r: ^codecs.Decoder_Registry, data: []u8, file: string) -> (codecs.Image, Pipeline_Error) {
+    ext := ""
+    if idx := strings.index(file, "."); idx != -1 {
+        ext = strings.to_lower(file[idx+1:])
     }
-    w, h, ch := int(out_w), int(out_h), int(out_channels)
-    px := cube_image_get_data(ptr)
-    sz := w * h * ch
-    buf := make([]u8, sz)
-    mem.copy(rawptr(&buf[0]), px, sz)
-    cube_image_free(ptr)
-    cs := ColorSpace.RGB
-    am := AlphaMode.Opaque
-    if ch == 4 { cs = ColorSpace.RGBA; am = AlphaMode.Straight }
-    else if ch == 1 { cs = ColorSpace.GRAY }
-    else if ch == 2 { cs = ColorSpace.GRAYA; am = AlphaMode.Straight }
-    return Image{u32(w), u32(h), buf, cs, am, Orientation.TopLeft}, Pipeline_Error{}
+    for dec in r.decoders {
+        if dec.CanDecode(ext, data) {
+            img := dec.Decode(data, file)
+            if img.Width == 0 && img.Height == 0 {
+                return codecs.Image{}, Pipeline_Error{Stage="decode", Codec=dec.Name, File=file, Message="decode failed"}
+            }
+            return img, Pipeline_Error{}
+        }
+    }
+    return codecs.Image{}, Pipeline_Error{Stage="decode", Codec="unknown", File=file, Message="no decoder found"}
 }
 
-pipeline_normalize :: proc(img: ^Image) {
+pipeline_normalize :: proc(img: ^codecs.Image) {
     pipeline_normalize_orientation(img)
     pipeline_normalize_alpha(img)
     pipeline_normalize_colorspace(img)
 }
 
-pipeline_normalize_orientation :: proc(img: ^Image) {
-    img.Orientation = Orientation.TopLeft
+pipeline_normalize_orientation :: proc(img: ^codecs.Image) {
+    img.Orientation = codecs.Orientation.TopLeft
 }
 
-pipeline_normalize_colorspace :: proc(img: ^Image) {
-    if img.ColorSpace == ColorSpace.GRAYA || img.ColorSpace == ColorSpace.YCbCr || img.ColorSpace == ColorSpace.RGBA {
-        if img.AlphaMode == AlphaMode.Opaque {
+pipeline_normalize_colorspace :: proc(img: ^codecs.Image) {
+    if img.ColorSpace == codecs.ColorSpace.GRAYA || img.ColorSpace == codecs.ColorSpace.YCbCr || img.ColorSpace == codecs.ColorSpace.RGBA {
+        if img.AlphaMode == codecs.AlphaMode.Opaque {
             if len(img.Pixels) < int(img.Width * img.Height * 3) { return }
             out := make([]u8, int(img.Width * img.Height * 3))
             cnt := int(img.Width * img.Height)
@@ -107,13 +96,13 @@ pipeline_normalize_colorspace :: proc(img: ^Image) {
                 out[i*3+2] = img.Pixels[i*4+2]
             }
             delete(img.Pixels); img.Pixels = out
-            img.ColorSpace = ColorSpace.RGB; img.AlphaMode = AlphaMode.Opaque
+            img.ColorSpace = codecs.ColorSpace.RGB; img.AlphaMode = codecs.AlphaMode.Opaque
         }
     }
 }
 
-pipeline_normalize_alpha :: proc(img: ^Image) {
-    if img.AlphaMode == AlphaMode.Premultiplied {
+pipeline_normalize_alpha :: proc(img: ^codecs.Image) {
+    if img.AlphaMode == codecs.AlphaMode.Premultiplied {
         cnt := int(img.Width * img.Height)
         ch := 4
         for i := 0; i < cnt; i += 1 {
@@ -124,14 +113,14 @@ pipeline_normalize_alpha :: proc(img: ^Image) {
                 img.Pixels[i*ch+2] = u8(f32(img.Pixels[i*ch+2]) * a)
             }
         }
-        img.AlphaMode = AlphaMode.Straight
+        img.AlphaMode = codecs.AlphaMode.Straight
     }
 }
 
-pipeline_resize :: proc(img: Image, nw: int, nh: int) -> Image {
+pipeline_resize :: proc(img: codecs.Image, nw: int, nh: int) -> codecs.Image {
     if nw <= 0 || nh <= 0 { return img }
     channels := 4
-    if img.ColorSpace == ColorSpace.RGB || img.ColorSpace == ColorSpace.GRAY { channels = 3 }
+    if img.ColorSpace == codecs.ColorSpace.RGB || img.ColorSpace == codecs.ColorSpace.GRAY { channels = 3 }
     ptr := cube_image_resize(
         rawptr(&img.Pixels[0]),
         c.int(img.Width), c.int(img.Height),
@@ -143,49 +132,26 @@ pipeline_resize :: proc(img: Image, nw: int, nh: int) -> Image {
     out := make([]u8, out_sz)
     mem.copy(rawptr(&out[0]), px, out_sz)
     cube_image_free(ptr)
-    return Image{u32(nw), u32(nh), out, ColorSpace.RGB, AlphaMode.Opaque, Orientation.TopLeft}
+    return codecs.Image{u32(nw), u32(nh), out, codecs.ColorSpace.RGB, codecs.AlphaMode.Opaque, codecs.Orientation.TopLeft}
 }
 
-pipeline_encode_jpeg :: proc(img: Image, quality: int) -> []u8 {
-    if len(img.Pixels) == 0 { return nil }
-    sp := img.Pixels; sch := 3
-    if img.ColorSpace == ColorSpace.RGBA {
-        sp = copy_to_channels_direct(img.Pixels, int(img.Width), int(img.Height), 4, 3)
-        if sp != nil { sch = 3 } else { sp = img.Pixels; sch = 4 }
-    } else if img.ColorSpace == ColorSpace.RGB { sch = 3 }
-    out_len: c.int
-    ptr := cube_image_encode_jpeg(rawptr(&sp[0]), c.int(img.Width), c.int(img.Height), c.int(sch), c.int(quality), &out_len)
-    if ptr == nil || out_len == 0 { return nil }
-    out := make([]u8, int(out_len))
-    mem.copy(rawptr(&out[0]), ptr, int(out_len))
-    cube_image_free_buffer(ptr)
-    return out
-}
-
-pipeline_encode_png :: proc(img: Image, quality: int) -> []u8 {
-    if len(img.Pixels) == 0 { return nil }
-    sch := 3
-    if img.ColorSpace == ColorSpace.RGBA || img.ColorSpace == ColorSpace.GRAYA { sch = 4 }
-    else if img.ColorSpace == ColorSpace.GRAY { sch = 1 }
-    out_len: c.int
-    ptr := cube_image_encode_png(rawptr(&img.Pixels[0]), c.int(img.Width), c.int(img.Height), c.int(sch), c.int(int(img.Width)*sch), &out_len)
-    if ptr == nil || out_len == 0 { return nil }
-    out := make([]u8, int(out_len))
-    mem.copy(rawptr(&out[0]), ptr, int(out_len))
-    cube_image_free_buffer(ptr)
-    return out
+pipeline_encode :: proc(r: ^codecs.Encoder_Registry, img: codecs.Image, format_req: string, quality: int) -> []u8 {
+    fmt := format_req
+    if fmt == "" {
+        if img.AlphaMode != codecs.AlphaMode.Opaque { fmt = "png" } else { fmt = "jpeg" }
+    }
+    fmt = strings.to_lower(fmt)
+    if fmt == "jpg" { fmt = "jpeg" }
+    enc, ok := r.encoders[fmt]
+    if !ok {
+        if img.AlphaMode != codecs.AlphaMode.Opaque { enc = r.encoders["png"] } else { enc = r.encoders["jpeg"] }
+    }
+    return enc.Encode(img, quality)
 }
 
 pipeline_choose_mime :: proc(fmt: string) -> string {
     if fmt == "png" { return "image/png" }
     return "image/jpeg"
-}
-
-pipeline_parse_format :: proc(accept: string, requested: string) -> string {
-    if requested != "" { return strings.to_lower(requested) }
-    al := strings.to_lower(accept)
-    if strings.contains(al, "image/png") { return "png" }
-    return "jpeg"
 }
 
 pipeline_key :: proc(file: string, version: string, w: int, h: int, f: string, quality: int) -> string {
@@ -204,14 +170,14 @@ pipeline_process :: proc(
     phys_path:   string,
     w:           int,
     h:           int,
-    format_req:   string,
-    quality:      int,
-    root_dir:     string,
-    cache_dir:    string,
-    max_bytes:    int,
-    max_width:    int,
-    max_height:   int,
-    img_cfg:      ^image_cache.Image_Cache,
+    format_req:  string,
+    quality:     int,
+    root_dir:    string,
+    cache_dir:   string,
+    max_bytes:   int,
+    max_width:   int,
+    max_height:  int,
+    img_cfg:     ^image_cache.Image_Cache,
 ) -> ([]u8, string, bool) {
     if !os.exists(phys_path) { return nil, "", false }
     fi, err := os.stat(phys_path, context.temp_allocator)
@@ -225,10 +191,12 @@ pipeline_process :: proc(
     if did_hit { return cached, fmime, true }
     orig_file, rerr := os.read_entire_file_from_path(phys_path, context.allocator)
     if rerr != nil { return nil, "", false }
-    t0 := time.now()
-    dec_img, dec_err := pipeline_decode(orig_file, phys_path)
+    dec_reg := codecs.decoder_registry_init()
+    dec_img, dec_err := pipeline_decode(&dec_reg, orig_file, phys_path)
     delete(orig_file)
     if dec_err.Message != "" { return nil, "", false }
+    v_err := pipeline_validate(phys_path, orig_file, dec_img, i64(max_bytes))
+    if v_err.Message != "" { return nil, "", false }
     pipeline_normalize(&dec_img)
     tw, th := w, h
     if tw == 0 && th > 0 {
@@ -247,11 +215,11 @@ pipeline_process :: proc(
         dec_img = pipeline_resize(dec_img, tw, th)
         if dec_img.Width == 0 || dec_img.Height == 0 { return nil, "", false }
     }
-    out := pipeline_encode_jpeg(dec_img, quality)
+    enc_reg := codecs.encoder_registry_init()
+    out := pipeline_encode(&enc_reg, dec_img, ff, quality)
     if out == nil || len(out) == 0 { return nil, "", false }
-    _ = t0
     if len(out) >= int(fi.size) { return nil, "", false }
     image_cache.image_cache_put(img_cfg, key, out, fmime, int(dec_img.Width), int(dec_img.Height))
     pipeline_cache_disk_put(cache_dir, key, out)
-    return out, fmime, true
+    return out, fmime, false
 }
