@@ -1478,58 +1478,6 @@ serve_images_json :: proc(ctx: ^RequestContext) {
     write_response(&ctx.resp, 200, "application/json", transmute([]byte)strings.to_string(b))
 }
 
-// ============================================================
-serve_dashboard_handler :: proc(ctx: ^RequestContext, g: ^Graph) {
-    _ = g
-    sync.mutex_lock(&global_telemetry.mutex)
-    defer sync.mutex_unlock(&global_telemetry.mutex)
-
-    b: strings.Builder
-    strings.builder_init(&b)
-    fmt.sbprintf(&b, "<html><head><title>cube dashboard</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px;text-align:left}th{background:#f4f4f4}a{color:#2563eb}</style></head><body>")
-    fmt.sbprintf(&b, "<h1>cube visits</h1>")
-    fmt.sbprintf(&b, "<p><a href=\"/\">site</a> &middot; <a href=\"/_cube/telemetry\">telemetry json</a> &middot; <a href=\"/_cube/telemetry/visits\">visits json</a> &middot; <a href=\"/_cube/images\">images json</a></p>")
-
-    fmt.sbprintf(&b, "<h2>recent visitors</h2>")
-    fmt.sbprintf(&b, "<table><thead><tr><th>ts</th><th>path</th><th>ip</th><th>referrer</th><th>ua</th></tr></thead><tbody>")
-
-    count := 0
-    first := true
-    vhead := sync.atomic_load(&global_telemetry.visitor_head)
-    if vhead > 0 {
-        for i := int(vhead) - 1; i >= 0 && count < 20; i -= 1 {
-            idx := i % len(global_telemetry.visitors)
-            v := &global_telemetry.visitors[idx]
-            if v.path_len == 0 { continue }
-            path_str := string(v.path[:v.path_len])
-            ip_str := string(v.ip[:v.ip_len])
-            ref_str := string(v.referrer[:v.ref_len])
-            ua_str := string(v.ua[:v.ua_len])
-            ts_iso, _ := time.time_to_rfc3339(v.ts)
-            valid := true
-            for ch in ip_str { if ch < 32 || ch >= 127 { valid = false; break } }
-            for ch in ua_str { if ch < 32 || ch >= 127 { valid = false; break } }
-            if !valid { continue }
-            if !first { fmt.sbprintf(&b, "<tr>") } else { first = false }
-            fmt.sbprintf(&b, "<tr><td>%s</td><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>",
-                ts_iso, path_str, path_str, ip_str, ref_str, ua_str)
-            count += 1
-        }
-    }
-    fmt.sbprintf(&b, "</tbody></table>")
-
-    fmt.sbprintf(&b, "<h2>page visits</h2><ul>")
-    for i := 0; i < global_telemetry.path_count; i += 1 {
-        item := &global_telemetry.path_visits[i]
-        path_str := string(item.path[:item.len])
-        fmt.sbprintf(&b, "<li><a href=\"%s\">%s</a> &mdash; %d</li>", path_str, path_str, item.count)
-    }
-    fmt.sbprintf(&b, "</ul>")
-
-    fmt.sbprintf(&b, "</body></html>")
-    write_response(&ctx.resp, 200, "text/html", transmute([]byte)strings.to_string(b))
-}
-
 serve_telemetry_handler :: proc(ctx: ^RequestContext, g: ^Graph) {
     _ = g
     serve_status_json(ctx)
@@ -2456,7 +2404,6 @@ main :: proc() {
     graph_add(&g, "/zerophone/", serve_proxy_handler)
     graph_add(&g, "/telemetry", serve_telemetry_handler)
     graph_add(&g, "/_cube/", serve_control_plane_handler)
-    graph_add(&g, "/dashboard", serve_dashboard_handler)
 
     fmt.printf("cube: %d workers on %s (root=%s)\n", cfg_workers, cfg_addr, root_dir)
     fmt.printf("cube: backpressure max_conns=%d cache=%v cache_mb=%d adaptive=%v\n",
