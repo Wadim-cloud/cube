@@ -90,7 +90,13 @@ copy_to_channels :: proc(src: Image, dst_channels: int) -> Image_Result {
         return {img = src, ok = true}
     }
     if dst_channels < src.channels {
-        return {img = {w = src.w, h = src.h, channels = dst_channels, data = src.data[:src.w * src.h * dst_channels]}, ok = true}
+        out := make([]byte, src.w * src.h * dst_channels)
+        for i := 0; i < src.w * src.h; i += 1 {
+            for c := 0; c < dst_channels; c += 1 {
+                out[i * dst_channels + c] = src.data[i * src.channels + c]
+            }
+        }
+        return {img = {w = src.w, h = src.h, channels = dst_channels, data = out}, ok = true}
     }
     return {ok = false, err = "channel expansion not supported"}
 }

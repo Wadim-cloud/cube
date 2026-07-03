@@ -13,6 +13,7 @@ import "../../core/storage"
 
 import "../../core/cube_image"
 import "../../core/image_cache"
+import "../../core/pipeline"
 import "core:sys/posix"
 import "core:sys/linux"
 
@@ -2026,84 +2027,43 @@ serve_image :: proc(ctx: ^RequestContext, g: ^Graph, orig_path: string, w: int, 
 
     t0 := time.now()
 
-    orig_file, rerr := os.read_entire_file_from_path(phys, context.allocator)
-    if rerr != nil {
-        serve_static_file(ctx, g, phys_path)
-        return
-    }
-    dec_img: cube_image.Image
-    dec_ok: bool
-    cube_image.load_from_memory(orig_file, &dec_img, &dec_ok)
-    if !dec_ok {
-        serve_static_file(ctx, g, phys_path)
-        return
-    }
-    dec := dec_img
-    defer image_free(dec)
+    root_dir_str := string(cfg.root_dir[:cfg.root_dir_len])
+    cache_dir_str := string(cfg.img_cache_dir[:cfg.img_cache_dir_len])
+    if cache_dir_str == "" { cache_dir_str = "./cache/images" }
 
-    orig_bytes := len(orig_file)
-    orig_w, orig_h := dec.w, dec.h
+    out, mime, cached := pipeline.pipeline_process(
+        orig_path,
+        phys_path,
+        w, h,
+        fmt_override,
+        quality,
+        root_dir_str,
+        cache_dir_str,
+        cfg.img_max_input,
+        cfg.img_max_width,
+        cfg.img_max_height,
+        &img_cfg,
+    )
 
-    tw, th := w, h
-    if tw == 0 && th > 0 {
-        tw = int(f64(dec.w) * f64(th) / f64(dec.h))
-    }
-    if th == 0 && tw > 0 {
-        th = int(f64(dec.h) * f64(tw) / f64(dec.w))
-    }
-    if tw > 0 && th > 0 && (tw > orig_w || th > orig_h) {
-        tw, th = 0, 0
-    }
+    _ = t0
+    if !cached && out != nil && len(out) > 0 {
+        write_response(&ctx.resp, 200, mime, out)
 
-    if tw > 0 || th > 0 {
-        if tw > cfg.img_max_width || th > cfg.img_max_height {
-            serve_static_file(ctx, g, phys_path)
-            return
-        }
-        ch := dec.channels
-        if ch == 4 && fmt_override == "jpeg" { ch = 3 }
-        resized := cube_image.resize(dec, tw, th, ch)
-        if !resized.ok {
-            serve_static_file(ctx, g, phys_path)
-            return
-        }
-        defer image_free(resized.img)
-        dec = resized.img
-    }
-
-    out: []byte
-    enc_ok := false
-    if fmt_override == "jpeg" {
-        out = cube_image.encode_jpeg(dec, quality)
-        enc_ok = out != nil
-    } else if fmt_override == "png" {
-        out = cube_image.encode_png(dec)
-        enc_ok = out != nil
-    }
-
-    if enc_ok && len(out) >= orig_bytes {
-        serve_static_file(ctx, g, phys_path)
+        root_dir := string(cfg.root_dir[:cfg.root_dir_len])
+        img_cache_dir := string(cfg.img_cache_dir[:cfg.img_cache_dir_len])
+        if img_cache_dir == "" { img_cache_dir = "./cache/images" }
+        image_jobs.image_job_queue_async(phys_path, w, h, root_dir, img_cache_dir, cfg.img_max_mem_mb)
+        record_image_metric(phys_path, 0, len(out), fmt_override, w, h, false)
         return
     }
 
-    if !enc_ok || out == nil {
-        serve_static_file(ctx, g, phys_path)
+    if cached {
+        record_image_metric(phys_path, 0, 0, fmt_override, w, h, true)
         return
     }
 
-    mime := image_cache.guess_mime(strings.concatenate([]string{"x.", fmt_override}))
-    image_cache.image_cache_put(&img_cfg, key, out, mime, dec.w, dec.h)
-
-    write_response(&ctx.resp, 200, mime, out)
-
-    // Queue background generation for other common sizes/formats
-    root_dir := string(cfg.root_dir[:cfg.root_dir_len])
-    img_cache_dir := string(cfg.img_cache_dir[:cfg.img_cache_dir_len])
-    if img_cache_dir == "" { img_cache_dir = "./cache/images" }
-    image_jobs.image_job_queue_async(phys_path, w, h, root_dir, img_cache_dir, cfg.img_max_mem_mb)
-
-    _ = time.duration_seconds(time.since(t0))
-    record_image_metric(phys_path, orig_bytes, len(out), fmt_override, dec.w, dec.h, false)
+    serve_static_file(ctx, g, phys_path)
+    record_image_metric(phys_path, 0, 0, fmt_override, w, h, false)
 }
 
 serve_static_file :: proc(ctx: ^RequestContext, g: ^Graph, path: string) {

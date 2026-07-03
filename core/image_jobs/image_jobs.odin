@@ -112,10 +112,17 @@ process_image_job :: proc(job: Image_Job) -> bool {
     }
 
     out: []byte
+    enc_img := dec_img
     if job.format == "jpeg" {
-        out = cube_image.encode_jpeg(dec_img, job.quality)
+        if dec_img.channels == 4 {
+            conv := cube_image.copy_to_channels(dec_img, 3)
+            if !conv.ok { return false }
+            defer cube_image.image_free(conv.img)
+            enc_img = conv.img
+        }
+        out = cube_image.encode_jpeg(enc_img, job.quality)
     } else if job.format == "png" {
-        out = cube_image.encode_png(dec_img)
+        out = cube_image.encode_png(enc_img)
     }
     if out == nil { return false }
 
