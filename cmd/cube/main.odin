@@ -98,6 +98,7 @@ Telemetry :: struct {
 }
 
 global_telemetry: Telemetry
+last_visitor_event_ts: time.Time
 
 // ============================================================
 // TYPES — TRACING (Layer ②)
@@ -597,6 +598,20 @@ record_visit :: proc(path: string, ip: string, referrer: string, ua: string) {
     copy(v.ua[:ualen], transmute([]byte)ua[:ualen])
     v.ua_len = ualen
     v.ts = now
+
+    // throttle visitor SSE events to avoid data pollution
+    if time.diff(last_visitor_event_ts, now) > 500 * time.Millisecond {
+        last_visitor_event_ts = now
+        ve := eventbus.Visitor_Event{}
+        plen := min(v.path_len, 127)
+        copy(ve.path[:], v.path[:plen])
+        ve.path_len = plen
+        iplen := min(v.ip_len, 63)
+        copy(ve.ip[:], v.ip[:iplen])
+        ve.ip_len = iplen
+        ve.ts = time.time_to_unix(now)
+        eventbus.Event_bus_publish_visitor(&ve)
+    }
 }
 
 // ============================================================
