@@ -1334,6 +1334,34 @@ serve_status_json :: proc(ctx: ^RequestContext) {
     }
     sync.mutex_unlock(&global_telemetry.mutex)
     fmt.sbprintf(&b, "  ]\n")
+
+    // Recent visitors ring (last 20)
+    fmt.sbprintf(&b, "  \"recent_visitors\": [\n")
+    count := 0
+    first := true
+    vhead := sync.atomic_load(&global_telemetry.visitor_head)
+    if vhead > 0 {
+        for i := int(vhead) - 1; i >= 0 && count < 20; i -= 1 {
+            idx := i % len(global_telemetry.visitors)
+            v := &global_telemetry.visitors[idx]
+            if v.path_len == 0 { continue }
+            path_str := string(v.path[:v.path_len])
+            ip_str := string(v.ip[:v.ip_len])
+            ref_str := string(v.referrer[:v.ref_len])
+            ua_str := string(v.ua[:v.ua_len])
+            ts_iso, _ := time.time_to_rfc3339(v.ts)
+            valid := true
+            for ch in ip_str { if ch < 32 || ch >= 127 { valid = false; break } }
+            for ch in ua_str { if ch < 32 || ch >= 127 { valid = false; break } }
+            if !valid { continue }
+            if !first { fmt.sbprintf(&b, ",\n") }
+            first = false
+            fmt.sbprintf(&b, "    {{\"path\":\"%s\",\"ip\":\"%s\",\"referrer\":\"%s\",\"ua\":\"%s\",\"ts\":\"%s\"}}",
+                path_str, ip_str, ref_str, ua_str, ts_iso)
+            count += 1
+        }
+    }
+    fmt.sbprintf(&b, "\n  ]\n")
     fmt.sbprintf(&b, "}}\n")
     write_response(&ctx.resp, 200, "application/json", transmute([]byte)strings.to_string(b))
 }
