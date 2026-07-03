@@ -13,15 +13,6 @@ Event_Type :: enum {
     METRICS,
     ADJUSTMENT,
     STATUS,
-    VISITOR,
-}
-
-Visitor_Event :: struct {
-    path:     [128]byte,
-    path_len: int,
-    ip:       [64]byte,
-    ip_len:   int,
-    ts:       i64,
 }
 
 Event_Entry :: struct {
@@ -48,13 +39,6 @@ Event_bus_publish :: proc(et: Event_Type, data: string) {
         copy(e.data[:], transmute([]byte)data)
     }
     sync.atomic_add(&Event_bus_write, 1)
-}
-
-Event_bus_publish_visitor :: proc(v: ^Visitor_Event) {
-    path_str := string(v.path[:v.path_len])
-    ip_str := string(v.ip[:v.ip_len])
-    data := fmt.tprintf("{\"path\":\"%s\",\"ip\":\"%s\",\"ts\":%d}", path_str, ip_str, v.ts)
-    Event_bus_publish(.VISITOR, data)
 }
 
 Event_bus_register :: proc(sock: net.TCP_Socket) -> bool {
@@ -127,7 +111,6 @@ event_type_to_string :: proc(et: Event_Type) -> string {
     case .METRICS:    return "metric"
     case .ADJUSTMENT: return "adjustment"
     case .STATUS:     return "status"
-    case .VISITOR:    return "visitor"
     case:             return "unknown"
     }
 }
