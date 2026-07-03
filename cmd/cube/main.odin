@@ -2178,6 +2178,24 @@ worker_run :: proc(id: int, listener: net.TCP_Socket, g: ^Graph) {
                     trace_idx = trace_idx,
                 }
                 trace_set_routed(trace_idx)
+                ip_raw := get_header(req, "X-Forwarded-For")
+                if len(ip_raw) == 0 {
+                    ip_raw = get_client_ip(client)
+                }
+                comma := strings.index(ip_raw, ",")
+                if comma >= 0 {
+                    ip_raw = ip_raw[:comma]
+                }
+                ip_raw = strings.trim_space(ip_raw)
+                if len(ip_raw) == 0 {
+                    ip_raw = "unknown"
+                }
+                record_visit(
+                    string(req.path),
+                    ip_raw,
+                    get_header(req, "Referer"),
+                    get_header(req, "User-Agent"),
+                )
                 serve_image(&ctx, g, string(req.path), img_w, img_h)
                 sync.atomic_add(&global_worker_stats[id].requests_handled, 1)
                 global_worker_stats[id].last_request = time.now()
